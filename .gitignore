@@ -6,6 +6,7 @@ __pycache__/
 1_Incoming/
 2_Processing/
 3_Outgoing/
+example_ply/
 
 # Ignore Blender backups
-*.blend1
+*.blend1example_ply/
