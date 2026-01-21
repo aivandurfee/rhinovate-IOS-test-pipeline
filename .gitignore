@@ -1,0 +1,11 @@
+# Ignore the Virtual Environment
+venv/
+__pycache__/
+
+# Ignore the Data Folders (Don't push patient data!)
+1_Incoming/
+2_Processing/
+3_Outgoing/
+
+# Ignore Blender backups
+*.blend1
