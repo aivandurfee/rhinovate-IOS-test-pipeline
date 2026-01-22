@@ -8,12 +8,12 @@ BLENDER_PATH = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
 
 # The two worker scripts
 SANITIZER_SCRIPT = "sanitize_trimesh.py"
-BLENDER_SCRIPT = "pipeline_final_v2.py"
+BLENDER_SCRIPT = "pipeline_hd.py"  # <--- UPDATED to use the new HD Engine
 # ---------------------
 
 def main():
     print("==========================================")
-    print("🚀 STARTING RHINOVATE PIPELINE")
+    print("🚀 STARTING RHINOVATE PIPELINE (HD MODE)")
     print("==========================================\n")
 
     # STEP 1: Run the Sanitizer (Standard Python)
@@ -37,7 +37,7 @@ def main():
 
     print("\n==========================================")
     print("🎉 PIPELINE FINISHED SUCCESSFULLY")
-    print("   Output saved to: 3_Outgoing/healed_result.glb")
+    print("   Output saved to: 3_Outgoing/ (Check for *_healed.glb)")
     print("==========================================")
 
 if __name__ == "__main__":
