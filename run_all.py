@@ -1,44 +1,83 @@
-import subprocess
+"""
+Rhinovate pipeline orchestrator.
+Runs sanitizer then Blender morph engine. Uses config.json for paths and params.
+"""
+import json
 import os
+import subprocess
 import sys
 
-# --- CONFIGURATION ---
-# Path to your Blender executable (Same one you used before)
-BLENDER_PATH = r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe"
-
-# The two worker scripts
+CONFIG_PATH = "config.json"
 SANITIZER_SCRIPT = "sanitize_trimesh.py"
-BLENDER_SCRIPT = "pipeline_hd.py"  # <--- UPDATED to use the new HD Engine
-# ---------------------
+BLENDER_SCRIPT = "pipeline_hd.py"
 
-def main():
+
+def load_config(project_root: str) -> dict:
+    path = os.path.join(project_root, CONFIG_PATH)
+    if not os.path.isfile(path):
+        print(f"[FAIL] Config not found: {path}")
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main() -> None:
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(project_root)
+
+    config = load_config(project_root)
+    folders = config.get("folders", {})
+    inc = folders.get("incoming", "1_Incoming")
+    proc = folders.get("processing", "2_Processing")
+    out = folders.get("outgoing", "3_Outgoing")
+
+    for rel_path in (inc, proc, out):
+        os.makedirs(os.path.join(project_root, rel_path), exist_ok=True)
+
+    env = os.environ.copy()
+    env["RHINOVATE_PROJECT_ROOT"] = project_root
+
     print("==========================================")
-    print("🚀 STARTING RHINOVATE PIPELINE (HD MODE)")
+    print("RHINOVATE PIPELINE")
     print("==========================================\n")
 
-    # STEP 1: Run the Sanitizer (Standard Python)
-    print(f"--- [Step 1/2] Running Sanitizer ({SANITIZER_SCRIPT}) ---")
+    print(f"--- [Step 1/2] Sanitizer ({SANITIZER_SCRIPT}) ---")
     try:
-        # We use sys.executable to ensure we use the CURRENT python (your venv)
-        subprocess.run([sys.executable, SANITIZER_SCRIPT], check=True)
+        subprocess.run(
+            [sys.executable, SANITIZER_SCRIPT],
+            check=True,
+            cwd=project_root,
+            env=env,
+        )
     except subprocess.CalledProcessError:
-        print("❌ CRITICAL: Sanitizer failed. Stopping pipeline.")
-        return
+        print("[FAIL] Sanitizer failed. Stopping pipeline.")
+        sys.exit(1)
 
-    print("\n✅ Sanitization complete. Handing off to Blender engine...\n")
+    print("\n[OK] Sanitization complete. Handing off to Blender...\n")
 
-    # STEP 2: Run the Blender Engine (Blender Python)
-    print(f"--- [Step 2/2] Running Morphing Engine ({BLENDER_SCRIPT}) ---")
+    blender_path = config.get("blender_path")
+    if not blender_path or not os.path.isfile(blender_path):
+        print(f"[FAIL] Blender not found: {blender_path}")
+        print("   Update blender_path in config.json.")
+        sys.exit(1)
+
+    print(f"--- [Step 2/2] Morph engine ({BLENDER_SCRIPT}) ---")
     try:
-        subprocess.run([BLENDER_PATH, "--background", "--python", BLENDER_SCRIPT], check=True)
+        subprocess.run(
+            [blender_path, "--background", "--python", BLENDER_SCRIPT],
+            check=True,
+            cwd=project_root,
+            env=env,
+        )
     except subprocess.CalledProcessError:
-        print("❌ CRITICAL: Blender Engine failed.")
-        return
+        print("[FAIL] Blender engine failed.")
+        sys.exit(1)
 
     print("\n==========================================")
-    print("🎉 PIPELINE FINISHED SUCCESSFULLY")
-    print("   Output saved to: 3_Outgoing/ (Check for *_healed.glb)")
+    print("PIPELINE FINISHED")
+    print(f"   Output: {out}/ (*_healed.glb)")
     print("==========================================")
+
 
 if __name__ == "__main__":
     main()

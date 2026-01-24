@@ -9,5 +9,5 @@ __pycache__/
 example_ply/
 
 # Ignore Blender backups
-*.blend1example_ply/
+*.blend1
 *.blend

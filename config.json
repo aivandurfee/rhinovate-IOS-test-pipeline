@@ -1,0 +1,25 @@
+{
+  "blender_path": "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe",
+  "folders": {
+    "incoming": "1_Incoming",
+    "processing": "2_Processing",
+    "outgoing": "3_Outgoing"
+  },
+  "filtering": {
+    "enable": true,
+    "k_neighbors": 20,
+    "std_ratio": 2.0,
+    "keep_largest_cluster": true
+  },
+  "pipeline": {
+    "use_voxelization": true,
+    "voxel_radius": 0.05,
+    "voxel_amount": 128,
+    "volume_threshold": 0.1,
+    "volume_adaptivity": 0.1,
+    "lattice_points": 9,
+    "lattice_padding": 1.1,
+    "lattice_resize_x": 0.8,
+    "lattice_brush_factor": 0.25
+  }
+}

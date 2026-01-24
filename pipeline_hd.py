@@ -1,231 +1,214 @@
-# import bpy
-# import os
-# import glob
-# import mathutils
-# import math
+"""
+Rhinovate Blender morph engine: OBJ → morphed GLB.
+Loads sanitized OBJ from 2_Processing, optionally voxelizes (Points→Volume→Mesh),
+applies lattice-based nose morph, exports to 3_Outgoing. Uses config.json via
+RHINOVATE_PROJECT_ROOT. Run via: blender --background --python pipeline_hd.py
+"""
+from __future__ import annotations
 
-# # --- CONFIGURATION ---
-# BASE_DIR = os.getcwd() 
-# INPUT_FOLDER = os.path.join(BASE_DIR, "2_Processing")
-# OUTPUT_FOLDER = os.path.join(BASE_DIR, "3_Outgoing")
-# # ---------------------
-
-# def run_pipeline():
-#     # 1. SETUP
-#     print("🧹 Clearing Scene...")
-#     bpy.ops.object.select_all(action='SELECT')
-#     bpy.ops.object.delete()
-    
-#     # 2. AUTO-DETECT
-#     list_of_files = glob.glob(os.path.join(INPUT_FOLDER, '*.obj'))
-#     if not list_of_files: 
-#         print("❌ No files found.")
-#         return
-
-#     latest_file = max(list_of_files, key=os.path.getctime)
-#     filename_only = os.path.basename(latest_file)
-#     print(f"📥 Loading: {filename_only}")
-
-#     try:
-#         bpy.ops.wm.obj_import(filepath=latest_file)
-#     except:
-#         bpy.ops.import_scene.obj(filepath=latest_file)
-        
-#     obj = bpy.context.selected_objects[0]
-#     obj.name = "Patient_Scan"
-    
-#     # FORCE SMOOTH SHADING (Fixes the faceted look without destroying data)
-#     bpy.ops.object.shade_smooth()
-
-#     # 3. SMART LATTICE SETUP (No Object Scaling!)
-#     print("📏 Measuring Patient...")
-    
-#     # Calculate the exact center of the geometry (not just the origin point)
-#     local_bbox_center = 0.125 * sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector())
-#     global_bbox_center = obj.matrix_world @ local_bbox_center
-    
-#     # Calculate the size of the geometry
-#     dimensions = obj.dimensions
-#     print(f"   Center: {global_bbox_center}")
-#     print(f"   Size: {dimensions}")
-
-#     # Create the Cage
-#     lattice_data = bpy.data.lattices.new("Nose_Cage")
-#     lattice_obj = bpy.data.objects.new("Nose_Cage", lattice_data)
-#     bpy.context.collection.objects.link(lattice_obj)
-    
-#     # 3x3x3 Grid (Center point controls the nose)
-#     lattice_data.points_u = 3
-#     lattice_data.points_v = 3
-#     lattice_data.points_w = 3
-    
-#     # ALIGNMENT: Place the cage exactly on the face center
-#     lattice_obj.location = global_bbox_center
-    
-#     # SCALING: Size the cage to fit this specific patient (with 20% padding)
-#     # This replaces the need to resize the patient!
-#     lattice_obj.scale = (dimensions.x * 1.2, dimensions.y * 1.2, dimensions.z * 1.2)
-    
-#     # Link Modifier
-#     modifier = obj.modifiers.new(name="Lattice_Deform", type='LATTICE')
-#     modifier.object = lattice_obj
-    
-#     # 4. SURGICAL MORPH
-#     print("👃 Applying Correction...")
-#     bpy.context.view_layer.objects.active = lattice_obj
-#     bpy.ops.object.mode_set(mode='EDIT')
-#     bpy.ops.lattice.select_all(action='DESELECT')
-    
-#     # SELECT CENTER POINTS (The Nose Area)
-#     # We select points inside the middle 30% of the box
-#     bpy.ops.lattice.select_all(action='SELECT')
-    
-#     # DYNAMIC CALCULATIONS
-#     # We need to tune the 'Proportional Size' to the patient's actual size.
-#     # For a head 200mm wide, a 150mm brush (0.75 factor) grabs the cheeks.
-#     # A 40mm brush (0.2 factor) grabs just the nose.
-#     brush_radius = dimensions.x * 0.2
-    
-#     # THE PINCH:
-#     # Resize X axis to 85% (Thinning)
-#     bpy.ops.transform.resize(value=(0.85, 1.0, 1.0), 
-#                              use_proportional_edit=True, 
-#                              proportional_edit_falloff='SMOOTH', 
-#                              proportional_size=brush_radius)
-                             
-#     bpy.ops.object.mode_set(mode='OBJECT')
-    
-#     # 5. EXPORT
-#     if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
-    
-#     # Save Debug File (To verify alignment)
-#     debug_path = os.path.join(OUTPUT_FOLDER, "debug_scene.blend")
-#     bpy.ops.wm.save_as_mainfile(filepath=debug_path)
-    
-#     # Export GLB
-#     out_name = filename_only.replace(".obj", "_healed.glb")
-#     out_path = os.path.join(OUTPUT_FOLDER, out_name)
-    
-#     # Ensure we only export the mesh, not the lattice box
-#     bpy.ops.object.select_all(action='DESELECT')
-#     obj.select_set(True)
-    
-#     # Export with "Apply Modifiers" to bake the pinch
-#     bpy.ops.export_scene.gltf(filepath=out_path, use_selection=True, export_apply=True)
-#     print("✅ Pipeline Success!")
-
-# if __name__ == "__main__":
-#     run_pipeline()
-
+import json
+import os
+import sys
+import glob
 
 import bpy
-import os
-import glob
 import mathutils
 
-# --- CONFIGURATION ---
-BASE_DIR = os.getcwd() 
-INPUT_FOLDER = os.path.join(BASE_DIR, "2_Processing")
-OUTPUT_FOLDER = os.path.join(BASE_DIR, "3_Outgoing")
-# ---------------------
+CONFIG_NAME = "config.json"
 
-def run_pipeline():
-    # 1. SETUP
-    print("🧹 Clearing Scene...")
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete()
+
+def _load_config() -> dict:
+    root = os.environ.get("RHINOVATE_PROJECT_ROOT")
+    if not root or not os.path.isdir(root):
+        root = os.getcwd()
+    path = os.path.join(root, CONFIG_NAME)
+    if not os.path.isfile(path):
+        print(f"[FAIL] Config not found: {path}")
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _fail(msg: str) -> None:
+    print(msg)
+    sys.exit(1)
+
+
+def _voxelize(obj: bpy.types.Object, cfg: dict) -> None:
+    """Points→Volume→Mesh. Use Mesh to Points if input is mesh (e.g. vertices-only OBJ)."""
+    mod = obj.modifiers.new(name="Mesher", type="NODES")
+    ng = bpy.data.node_groups.new(name="Meshing_Nodes", type="GeometryNodeTree")
+    mod.node_group = ng
+
+    if hasattr(ng, "interface"):
+        ng.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        ng.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+
+    nodes = ng.nodes
+    links = ng.links
+    inp = nodes.new("NodeGroupInput")
+    out = nodes.new("NodeGroupOutput")
+
+    mesh_to_pts = nodes.new("GeometryNodeMeshToPoints")
+    mesh_to_pts.mode = "VERTICES"
+
+    pts_to_vol = nodes.new("GeometryNodePointsToVolume")
+    pts_to_vol.inputs["Radius"].default_value = float(cfg.get("voxel_radius", 0.05))
+    pts_to_vol.inputs["Voxel Amount"].default_value = int(cfg.get("voxel_amount", 128))
+
+    vol_to_mesh = nodes.new("GeometryNodeVolumeToMesh")
+    vol_to_mesh.inputs["Threshold"].default_value = float(cfg.get("volume_threshold", 0.1))
+    vol_to_mesh.inputs["Adaptivity"].default_value = float(cfg.get("volume_adaptivity", 0.1))
+
+    links.new(inp.outputs[0], mesh_to_pts.inputs[0])
+    links.new(mesh_to_pts.outputs[0], pts_to_vol.inputs[0])
+    links.new(pts_to_vol.outputs[0], vol_to_mesh.inputs[0])
+    links.new(vol_to_mesh.outputs[0], out.inputs[0])
+
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier="Mesher")
+
+
+def _ensure_visible(obj: bpy.types.Object) -> None:
+    """Ensure mesh is centered at origin and has valid geometry."""
+    # Update mesh data
+    obj.update_from_editmode()
+    obj.data.update()
     
-    # 2. AUTO-DETECT
-    list_of_files = glob.glob(os.path.join(INPUT_FOLDER, '*.obj'))
-    if not list_of_files: 
-        print("❌ No files found.")
+    # Get dimensions
+    dims = obj.dimensions
+    print(f"   Mesh dimensions: {dims}")
+    print(f"   Vertices: {len(obj.data.vertices)}")
+    
+    # Check if mesh has geometry
+    if len(obj.data.vertices) == 0:
+        print("[WARN] Mesh has no vertices after processing!")
         return
+    
+    # Ensure origin is at geometry center
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="MEDIAN")
+    
+    # Move to world origin
+    obj.location = (0, 0, 0)
+    
+    # Frame the view (useful for debugging, but we're in headless mode)
+    # bpy.ops.view3d.view_all()
 
-    latest_file = max(list_of_files, key=os.path.getctime)
-    filename_only = os.path.basename(latest_file)
-    print(f"📥 Loading: {filename_only}")
+
+def _lattice_morph(obj: bpy.types.Object, cfg: dict) -> None:
+    """9×9×9 lattice around bbox center, resize middle U-columns on X."""
+    lp = int(cfg.get("lattice_points", 9))
+    pad = float(cfg.get("lattice_padding", 1.1))
+    resize_x = float(cfg.get("lattice_resize_x", 0.8))
+    brush = float(cfg.get("lattice_brush_factor", 0.25))
+
+    local_center = 0.125 * sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector())
+    global_center = obj.matrix_world @ local_center
+    dims = obj.dimensions
+
+    lat_data = bpy.data.lattices.new("Nose_Cage")
+    lat_obj = bpy.data.objects.new("Nose_Cage", lat_data)
+    bpy.context.collection.objects.link(lat_obj)
+
+    lat_data.points_u = lat_data.points_v = lat_data.points_w = lp
+    lat_obj.location = global_center
+    lat_obj.scale = (dims.x * pad, dims.y * pad, dims.z * pad)
+
+    mod = obj.modifiers.new(name="Lattice_Deform", type="LATTICE")
+    mod.object = lat_obj
+
+    mid = lp // 2
+    for i, pt in enumerate(lat_data.points):
+        if (i % lp) in (mid - 1, mid, mid + 1):
+            pt.select = True
+        else:
+            pt.select = False
+
+    bpy.context.view_layer.objects.active = lat_obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    brush_size = dims.x * brush
+    bpy.ops.transform.resize(
+        value=(resize_x, 1.0, 1.0),
+        use_proportional_edit=True,
+        proportional_edit_falloff="SMOOTH",
+        proportional_size=brush_size,
+    )
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def run_pipeline() -> None:
+    config = _load_config()
+    folders = config.get("folders", {})
+    proc = folders.get("processing", "2_Processing")
+    out = folders.get("outgoing", "3_Outgoing")
+
+    root = os.environ.get("RHINOVATE_PROJECT_ROOT", os.getcwd())
+    input_dir = os.path.join(root, proc)
+    output_dir = os.path.join(root, out)
+    os.makedirs(output_dir, exist_ok=True)
+
+    obj_files = glob.glob(os.path.join(input_dir, "*.obj"))
+    if not obj_files:
+        _fail("[FAIL] No .obj files in '2_Processing'. Run sanitizer first.")
+
+    latest = max(obj_files, key=os.path.getctime)
+    filename = os.path.basename(latest)
+    print(f"Loading: {filename}")
+
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
 
     try:
-        bpy.ops.wm.obj_import(filepath=latest_file)
-    except:
-        bpy.ops.import_scene.obj(filepath=latest_file)
-        
-    obj = bpy.context.selected_objects[0]
+        bpy.ops.wm.obj_import(filepath=latest)
+    except Exception:
+        try:
+            bpy.ops.import_scene.obj(filepath=latest)
+        except Exception as e:
+            _fail(f"[FAIL] Import failed: {e}")
+
+    objs_sel = [o for o in bpy.context.selected_objects if o.type == "MESH"]
+    if not objs_sel:
+        _fail("[FAIL] No mesh imported.")
+    obj = objs_sel[0]
     obj.name = "Patient_Scan"
     bpy.ops.object.shade_smooth()
+    
+    print(f"   Initial vertices: {len(obj.data.vertices)}")
 
-    # 3. ALIGNMENT
-    print("📏 Measuring Patient...")
-    local_bbox_center = 0.125 * sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector())
-    global_bbox_center = obj.matrix_world @ local_bbox_center
-    dimensions = obj.dimensions
+    pl = config.get("pipeline", {})
+    if pl.get("use_voxelization"):
+        print("Voxelizing...")
+        _voxelize(obj, pl)
+        _ensure_visible(obj)
 
-    # 4. HIGH-RES LATTICE SETUP (9x9x9)
-    lattice_data = bpy.data.lattices.new("Nose_Cage")
-    lattice_obj = bpy.data.objects.new("Nose_Cage", lattice_data)
-    bpy.context.collection.objects.link(lattice_obj)
+    print("Applying lattice morph...")
+    _lattice_morph(obj, pl)
+    _ensure_visible(obj)
+
+    out_name = filename.replace(".obj", "_healed.glb")
+    out_path = os.path.join(output_dir, out_name)
     
-    # 9 points wide means indices 0,1,2 (Left Ear), 3,4,5 (Nose), 6,7,8 (Right Ear)
-    lattice_data.points_u = 9  
-    lattice_data.points_v = 9
-    lattice_data.points_w = 9
+    # Final validation
+    if len(obj.data.vertices) == 0:
+        _fail("[FAIL] Mesh has no vertices - cannot export!")
     
-    # Place & Scale Cage (10% padding ensures we capture chin and forehead)
-    lattice_obj.location = global_bbox_center
-    lattice_obj.scale = (dimensions.x * 1.1, dimensions.y * 1.1, dimensions.z * 1.1)
-    
-    modifier = obj.modifiers.new(name="Lattice_Deform", type='LATTICE')
-    modifier.object = lattice_obj
-    
-    # 5. SURGICAL SELECTION (The Math Fix)
-    print("👃 Selecting Nose Area...")
-    
-    # Instead of entering Edit Mode to select (which is tricky in headless),
-    # We select the points directly in the data block.
-    
-    # Reset all selection
-    for point in lattice_data.points:
-        point.select = False
-        
-    # Select ONLY the middle columns (Indices 3, 4, 5)
-    # The points are stored in a flat list, but we know the U-dimension is 9.
-    # U-Index = index % points_u
-    u_points = lattice_data.points_u
-    
-    for i, point in enumerate(lattice_data.points):
-        u_index = i % u_points
-        
-        # If the point is in the middle 3 columns...
-        if u_index in [3, 4, 5]:
-            point.select = True
-            
-    # 6. APPLY THE PINCH
-    bpy.context.view_layer.objects.active = lattice_obj
-    bpy.ops.object.mode_set(mode='EDIT')
-    
-    # Tune the brush size to be the width of the nose bridge only
-    brush_radius = dimensions.x * 0.25
-    
-    # Resize X-Axis to 85% (Thinning)
-    bpy.ops.transform.resize(value=(0.80, 1.0, 1.0), 
-                             use_proportional_edit=True, 
-                             proportional_edit_falloff='SMOOTH', 
-                             proportional_size=brush_radius)
-                             
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    # 7. EXPORT
-    if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
-    
-    out_name = filename_only.replace(".obj", "_healed.glb")
-    out_path = os.path.join(OUTPUT_FOLDER, out_name)
-    
-    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
     
-    # Export using 'Apply Modifiers' so the GLB has the shape baked in
-    bpy.ops.export_scene.gltf(filepath=out_path, use_selection=True, export_apply=True)
-    print("✅ Pipeline Success!")
+    # Export with proper settings
+    bpy.ops.export_scene.gltf(
+        filepath=out_path,
+        use_selection=True,
+        export_apply=True,
+        export_format="GLB",
+    )
+    print(f"[OK] Exported: {out_name} ({len(obj.data.vertices)} vertices, dims: {obj.dimensions})")
+
 
 if __name__ == "__main__":
-    run_pipeline()
+    try:
+        run_pipeline()
+    except Exception as e:
+        print(f"[FAIL] Pipeline error: {e}")
+        sys.exit(1)
